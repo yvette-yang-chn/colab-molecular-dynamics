@@ -1,0 +1,125 @@
+# 1. 安装 GPU 支持版 GROMACS
+%cd /content
+!wget ftp://ftp.gromacs.org/pub/gromacs/gromacs-2022.5.tar.gz
+!tar xfz gromacs-2022.5.tar.gz
+%cd gromacs-2022.5
+!mkdir build
+%cd build
+!cmake .. -DGMX_GPU=CUDA -DGMX_BUILD_OWN_FFTW=ON -DCMAKE_INSTALL_PREFIX=/usr/local/gromacs
+!make -j8
+!make install
+
+# 加载 GROMACS 环境
+!source /usr/local/gromacs/bin/GMXRC
+import os
+os.environ['PATH'] = '/usr/local/gromacs/bin:' + os.environ['PATH']
+
+# 显示版本
+!gmx --version
+
+# 上传charmmgui导出文件
+from google.colab import files
+uploaded = files.upload()  # 上传你的 .tgz 文件
+
+import tarfile
+
+# 解压上传的 .tgz 文件
+with tarfile.open('charmm-gui.tgz', 'r:gz') as file:
+    file.extractall('/content/')
+
+# 查看文件目录结构
+!ls /content
+
+# 确定拓扑文件位置
+!find /content -name "topol.top"
+
+# 进入 GROMACS 文件夹（路径可参考topol文件位置）
+%cd /content/charmm-gui-6103213306/gromacs
+
+# 准备能量最小化输入文件（所用文件均为解压文件）
+
+!gmx grompp -f step4.0_minimization.mdp -c step3_input.gro -r step3_input.gro -p topol.top -n index.ndx -o em.tpr
+
+# 运行能量最小化
+!gmx mdrun -deffnm em
+
+# 保存 GROMACS 参数文件 & 能量最小化文件（em.*）
+!cp topol.top *.mdp index.ndx "$em_dir"
+!cp em.* "$em_dir"
+
+# 显示确认结果
+print("✅ 保存完成！以下是保存路径内容：")
+!ls "$em_dir"
+
+# 可视化-判断是否平稳
+# 1.提取能量数据，输出能量-步长曲线
+!gmx energy -f em.edr -o potential.xvg
+#
+import matplotlib.pyplot as plt
+
+steps, potential = [], []
+with open("potential.xvg") as f:
+    for line in f:
+        if line.startswith(("@", "#")):
+            continue
+        cols = line.split()
+        steps.append(float(cols[0]))
+        potential.append(float(cols[1]))
+
+plt.figure(figsize=(8,5))
+plt.plot(steps, potential, lw=2)
+plt.xlabel("Minimization Step", fontsize=12)
+plt.ylabel("Potential Energy (kJ/mol)", fontsize=12)
+plt.title("Energy Minimization Convergence", fontsize=14)
+plt.grid(True, linestyle="--", alpha=0.6)
+# === 3. 保存并下载 ===
+save_as = 'total_energy.tif'
+plt.savefig(save_as, dpi=900)
+plt.show()
+import matplotlib.pyplot as plt
+import numpy as np
+
+# 2.定义一个函数读取 .xvg 文件
+def read_xvg(filename):
+    x, y = [], []
+    with open(filename, 'r') as f:
+        for line in f:
+            if line.startswith(('#', '@')):  # 忽略注释
+                continue
+            cols = line.split()
+            x.append(float(cols[0]))
+            y.append(float(cols[1]))
+    return np.array(x), np.array(y)
+
+# 读取温度、压力、密度数据
+t, temp = read_xvg("temp.xvg")
+t_p, pressure = read_xvg("pressure.xvg")
+t_d, density = read_xvg("density.xvg")
+
+
+# 绘制图像：温度/压力/密度-时间
+plt.figure(figsize=(20,5))
+
+plt.subplot(1,3,1)
+plt.plot(t, temp, color='tomato')
+plt.title('Temperature (K)')
+plt.xlabel('Time (ps)')
+plt.ylabel('Temperature')
+plt.savefig('em_tem.tif', dpi=900)
+
+plt.subplot(1,3,2)
+plt.plot(t_p, pressure, color='royalblue')
+plt.title('Pressure (bar)')
+plt.xlabel('Time (ps)')
+plt.ylabel('Pressure')
+plt.savefig('em_pre.tif', dpi=900)
+
+plt.subplot(1,3,3)
+plt.plot(t_d, density, color='seagreen')
+plt.title('Density (kg/m³)')
+plt.xlabel('Time (ps)')
+plt.ylabel('Density')
+plt.savefig('em_den.tif', dpi=900)
+
+plt.tight_layout()
+plt.show()
