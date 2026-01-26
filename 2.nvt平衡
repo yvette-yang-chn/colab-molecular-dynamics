@@ -1,0 +1,142 @@
+# 1.配置环境
+#安装依赖（CUDA + CMake + 编译工具）
+!apt-get update -y
+!apt-get install -y cmake build-essential m4 git wget
+!apt-get install -y libfftw3-dev libgsl-dev
+
+# 检查GPU情况
+!nvidia-smi
+
+# 安装 GPU 支持版 GROMACS
+%cd /content
+!wget ftp://ftp.gromacs.org/pub/gromacs/gromacs-2022.5.tar.gz
+!tar xfz gromacs-2022.5.tar.gz
+%cd gromacs-2022.5
+!mkdir build
+%cd build
+!cmake .. -DGMX_GPU=CUDA -DGMX_BUILD_OWN_FFTW=ON -DCMAKE_INSTALL_PREFIX=/usr/local/gromacs
+!make -j8
+!make install
+
+# 加载 GROMACS 环境
+!source /usr/local/gromacs/bin/GMXRC
+import os
+os.environ['PATH'] = '/usr/local/gromacs/bin:' + os.environ['PATH']
+
+# 2.挂载 Google Drive（提前在云盘新建step2_nvt文件夹并上传前置文件）
+from google.colab import drive
+drive.mount('/content/drive')
+
+!find /content -name "topol.top"
+
+# 进入nvt文件夹（根据实际路径修改版）
+%cd /content/drive/MyDrive/project/nvt/
+
+# NVT平衡
+!gmx grompp -f step4.1_equilibration.mdp -c em.gro -r em.gro -p topol.top -n index.ndx -o nvt.tpr
+!gmx mdrun -deffnm nvt
+
+#保存数据
+# 定义保存路径
+base_dir = "/content/drive/MyDrive/project"
+nvt_dir = f"{base_dir}/step2_nvt"
+
+# 创建文件夹（如果不存在）
+!mkdir -p "$nvt_dir"
+
+# 保存 NVT 模拟相关文件（nvt.*）
+!cp nvt.* "$nvt_dir"
+
+# 显示确认结果
+print("✅ 保存完成！以下是保存路径内容：")
+!ls "$nvt_dir"
+
+
+# ⚡断点重续
+# 挂载 Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+#  回到 NVT 模拟保存目录
+%cd /content/drive/MyDrive/project/step2_nvt/
+
+# 检查是否存在 checkpoint 文件
+!ls nvt.cpt
+
+# 使用 .cpt 断点文件继续模拟（可以控制模拟步数）
+!gmx mdrun -deffnm nvt -cpi nvt.cpt -nt -v
+
+
+#保存数据并备份
+# ✅ 打包 NVT 输出结果
+!zip -r /content/drive/MyDrive/project/step2_nvt/
+# 创建一个用于备份的目录
+!mkdir -p /content/drive/MyDrive/project/backup_nvt
+# 复制所有 nvt 输出文件
+!cp nvt.* /content/drive/MyDrive/project/backup_nvt/
+# 复制nvt恢复程序
+!cp nvt_prev.cpt /content/drive/MyDrive/project/backup_nvt/
+# 查看备份文件夹中的内容
+!ls /content/drive/MyDrive//MD_project_10075026/backup_nvt/
+
+# 3.数据可视化
+# 挂载 Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# 设置工作目录（根据实际情况）
+%cd /content/drive/MyDrive/project/step2_nvt
+import os
+
+# 运行过程中可分析体系稳定情况，如稳定可提前结束
+!gmx energy -f nvt.edr -o temp.xvg
+!gmx energy -f nvt.edr -o pressure.xvg
+!gmx energy -f nvt.edr -o density.xvg
+
+#输出图像
+import matplotlib.pyplot as plt
+import numpy as np
+
+# 定义一个函数读取 .xvg 文件
+def read_xvg(filename):
+    x, y = [], []
+    with open(filename, 'r') as f:
+        for line in f:
+            if line.startswith(('#', '@')):  # 忽略注释
+                continue
+            cols = line.split()
+            x.append(float(cols[0]))
+            y.append(float(cols[1]))
+    return np.array(x), np.array(y)
+
+# 读取温度、压力、密度数据
+t, temp = read_xvg("temp.xvg")
+t_p, pressure = read_xvg("pressure.xvg")
+t_d, density = read_xvg("density.xvg")
+
+# 绘制图像
+plt.figure(figsize=(20,5))
+
+plt.subplot(1,3,1)
+plt.plot(t, temp, color='tomato')
+plt.title('Temperature (K)')
+plt.xlabel('Time (ps)')
+plt.ylabel('Temperature')
+plt.savefig('npt_tem.tif', dpi=900)
+
+plt.subplot(1,3,2)
+plt.plot(t_p, pressure, color='royalblue')
+plt.title('Pressure (bar)')
+plt.xlabel('Time (ps)')
+plt.ylabel('Pressure')
+plt.savefig('npt_pre.tif', dpi=900)
+
+plt.subplot(1,3,3)
+plt.plot(t_d, density, color='seagreen')
+plt.title('Density (kg/m³)')
+plt.xlabel('Time (ps)')
+plt.ylabel('Density')
+plt.savefig('npt_den.tif', dpi=900)
+
+plt.tight_layout()
+plt.show()
