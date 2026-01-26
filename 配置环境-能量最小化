@@ -17,33 +17,39 @@ os.environ['PATH'] = '/usr/local/gromacs/bin:' + os.environ['PATH']
 # 显示版本
 !gmx --version
 
-# 上传charmmgui导出文件
+# 2.上传charmmgui输出的.tgz 文件
 from google.colab import files
-uploaded = files.upload()  # 上传你的 .tgz 文件
+uploaded = files.upload()  
 
+# 解压上传的 .tgz 文件，查看文件目录结构
 import tarfile
-
-# 解压上传的 .tgz 文件
 with tarfile.open('charmm-gui.tgz', 'r:gz') as file:
     file.extractall('/content/')
-
-# 查看文件目录结构
 !ls /content
 
 # 确定拓扑文件位置
 !find /content -name "topol.top"
 
-# 进入 GROMACS 文件夹（路径可参考topol文件位置）
-%cd /content/charmm-gui-6103213306/gromacs
+# 3.进入 GROMACS 文件夹（路径可参考topol文件位置）
+%cd /content/charmm-gui/gromacs
 
 # 准备能量最小化输入文件（所用文件均为解压文件）
-
 !gmx grompp -f step4.0_minimization.mdp -c step3_input.gro -r step3_input.gro -p topol.top -n index.ndx -o em.tpr
 
 # 运行能量最小化
 !gmx mdrun -deffnm em
 
-# 保存 GROMACS 参数文件 & 能量最小化文件（em.*）
+# 4.保存 GROMACS 参数文件 & 能量最小化文件（em.*）
+# 挂载 Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# 定义保存目录路径
+base_dir = "/content/drive/MyDrive/project"
+em_dir = f"{base_dir}/step1_em"
+
+# 创建文件夹（如果不存在）
+!mkdir -p "$em_dir"
 !cp topol.top *.mdp index.ndx "$em_dir"
 !cp em.* "$em_dir"
 
@@ -51,10 +57,19 @@ with tarfile.open('charmm-gui.tgz', 'r:gz') as file:
 print("✅ 保存完成！以下是保存路径内容：")
 !ls "$em_dir"
 
-# 可视化-判断是否平稳
-# 1.提取能量数据，输出能量-步长曲线
+# 5.可视化-判断是否平稳
+# 挂载 Google drive
+from google.colab import drive
+drive.mount('/content/drive')
+%cd /content/drive/MyDrive/project/em
+
+# 提取能量数据
 !gmx energy -f em.edr -o potential.xvg
-#
+!gmx energy -f em.edr -o temp.xvg
+!gmx energy -f em.edr -o pressure.xvg
+!gmx energy -f em.edr -o density.xvg
+
+# 输出能量-步长曲线
 import matplotlib.pyplot as plt
 
 steps, potential = [], []
@@ -72,7 +87,7 @@ plt.xlabel("Minimization Step", fontsize=12)
 plt.ylabel("Potential Energy (kJ/mol)", fontsize=12)
 plt.title("Energy Minimization Convergence", fontsize=14)
 plt.grid(True, linestyle="--", alpha=0.6)
-# === 3. 保存并下载 ===
+
 save_as = 'total_energy.tif'
 plt.savefig(save_as, dpi=900)
 plt.show()
@@ -95,7 +110,6 @@ def read_xvg(filename):
 t, temp = read_xvg("temp.xvg")
 t_p, pressure = read_xvg("pressure.xvg")
 t_d, density = read_xvg("density.xvg")
-
 
 # 绘制图像：温度/压力/密度-时间
 plt.figure(figsize=(20,5))
