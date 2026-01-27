@@ -1,0 +1,700 @@
+# 1.配置环境
+# 安装依赖（CUDA + CMake + 编译工具）
+!apt-get update -y
+!apt-get install -y cmake build-essential m4 git wget
+!apt-get install -y libfftw3-dev libgsl-dev
+
+# 检查GPU情况
+!nvidia-smi
+
+# 安装 GPU 支持版 GROMACS
+%cd /content
+!wget ftp://ftp.gromacs.org/pub/gromacs/gromacs-2022.5.tar.gz
+!tar xfz gromacs-2022.5.tar.gz
+%cd gromacs-2022.5
+!mkdir build
+%cd build
+!cmake .. -DGMX_GPU=CUDA -DGMX_BUILD_OWN_FFTW=ON -DCMAKE_INSTALL_PREFIX=/usr/local/gromacs
+!make -j8
+!make install
+
+# 加载 GROMACS 环境
+!source /usr/local/gromacs/bin/GMXRC
+import os
+os.environ['PATH'] = '/usr/local/gromacs/bin:' + os.environ['PATH']
+
+!gmx --version
+
+import os
+
+# 挂载 Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# 确认 Google Drive 挂载路径是否正确
+drive_path = "/content/drive/MyDrive/project/md"
+if not os.path.exists(drive_path):
+    print(f"目录 {drive_path} 不存在，创建它...")
+    os.makedirs(drive_path)
+else:
+    print(f"目录 {drive_path} 存在。")
+
+# 检查是否能写入文件
+test_file_path = os.path.join(drive_path, "test.txt")
+try:
+    with open(test_file_path, "w") as test_file:
+        test_file.write("Test")
+    print("可以成功写入文件！")
+except Exception as e:
+    print(f"写入文件失败: {e}")
+
+# 2.创建文件
+# 上传charmmgui生成的轨迹文件后，检查.mdp文件
+!cat /content/drive/MyDrive/Mproject/md/step5_production.mdp
+
+# 根据需要修改mdp文件参数（此处修改时间与步长）
+# 原始 MDP 文件路径
+mdp_path = "/content/drive/MyDrive/project/md/step5_production.mdp"
+# 新的 50ns MDP 文件路径
+new_mdp_path = "/content/drive/MyDrive/project/md/step5_production_50ns.mdp"
+
+# 新参数设置
+new_dt = "0.002"
+new_nsteps = "25000000"
+
+# 读取并修改内容
+with open(mdp_path, "r") as f:
+    lines = f.readlines()
+
+new_lines = []
+for line in lines:
+    if line.strip().startswith("dt"):
+        new_lines.append(f"dt                      = {new_dt}\n")
+    elif line.strip().startswith("nsteps"):
+        new_lines.append(f"nsteps                  = {new_nsteps}\n")
+    else:
+        new_lines.append(line)
+
+# 写入新文件
+with open(new_mdp_path, "w") as f:
+    f.writelines(new_lines)
+
+print(f"✅ 已生成 50 ns MDP 文件：{new_mdp_path}")
+
+# 检查生成的.mdp文件
+# 读取 .mdp 文件并提取 nsteps 和 dt
+def parse_mdp(file_path):
+    with open(file_path, 'r') as file:
+        content = file.readlines()
+
+    dt = None
+    nsteps = None
+
+    for line in content:
+        if "dt" in line:
+            dt = float(line.split()[-1])
+        elif "nsteps" in line:
+            nsteps = int(line.split()[-1])
+
+    return dt, nsteps
+
+# 计算模拟总时间
+def calculate_total_time(mdp_file_path):
+    dt, nsteps = parse_mdp(mdp_file_path)
+
+    if dt is not None and nsteps is not None:
+        total_time_ns = dt * nsteps / 1000  # 转化为纳秒（ns）
+        return total_time_ns
+    else:
+        return "无法找到参数 dt 或 nsteps"
+
+# 使用你的 .mdp 文件路径
+mdp_file_path = '/content/drive/MyDrive/MD_project_10075026/step5_md_true/step5_production_50ns.mdp'
+
+# 输出总时间
+total_time = calculate_total_time(mdp_file_path)
+print(f"模拟总时间为：{total_time} ns")
+
+# 3.生产模拟
+#  进入工作目录
+%cd /content/drive/MyDrive/project/md
+
+# 生产模拟（带断点续跑功能，若续跑失败，请在Google drive中将使用的*.gro *.cpt *.tpr *.log *.xtc *.edr回退到同一版本重新续跑）
+!gmx grompp -f step5_production_50ns.mdp -c npt.gro -t npt.cpt -p topol.top -n index.ndx -o md.tpr
+!gmx mdrun -deffnm md -cpi md.cpt -v
+
+# 自动备份关键输出文件
+!mkdir -p /content/drive/MyDrive/project/md_backup
+!cp *.gro *.cpt *.tpr *.log *.xtc *.edr /content/drive/MyDrive/project/md_backup/
+
+# 4. 数据分析
+# 进入工作目录
+%cd /content/drive/MyDrive/project/md
+
+# 温度，压力，总能量，rmsd，rg可视化
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+import os
+
+# 📁 设置工作目录（根据你的实际情况）
+work_dir = '/content/drive/MyDrive/MD_project_10075026/step5_md_1026'
+os.chdir(work_dir)
+
+# 🎨 全局字体与字号设置
+mpl.rcParams['font.family'] = 'Arial'
+mpl.rcParams['font.size'] = 12
+mpl.rcParams['axes.titlesize'] = 14
+mpl.rcParams['axes.labelsize'] = 12
+mpl.rcParams['xtick.labelsize'] = 10
+mpl.rcParams['ytick.labelsize'] = 10
+
+# 统一绘图函数，新增 xunit 参数（默认 'ps'）
+def plot_xvg(file, title, ylabel, save_as, xunit='ps'):
+    time = []
+    value = []
+    with open(file, 'r') as f:
+        for line in f:
+            if line.startswith(('@', '#')):
+                continue
+            cols = line.strip().split()
+            time.append(float(cols[0]))
+            value.append(float(cols[1]))
+
+    plt.figure(figsize=(8,5))
+    plt.plot(time, value, color='#2174AE')
+    plt.title(title)
+    plt.xlabel(f'Time ({xunit})')
+    plt.ylabel(ylabel)
+    plt.grid(False)
+    plt.tight_layout()
+    plt.savefig(save_as.replace('.png', '.tif'), dpi=900)
+    plt.show()
+    print(f"✅ 已保存图表：{save_as}")
+
+# 🛠️ 生成 xvg 数据（跟你之前完全一致）
+!echo 16  | gmx energy -f md.edr -o temperature.xvg     # Temperature
+!echo 18  | gmx energy -f md.edr -o pressure.xvg        # Pressure
+!echo 10  | gmx energy -f md.edr -o total_energy.xvg    # Total Energy
+!echo 4 4  | gmx rms    -s md.tpr -f md.xtc -o rmsd.xvg -tu ns
+!gmx gyrate -s md.tpr -f md.xtc -o rg.xvg
+
+# 📊 绘图时显式指定 rmsd 用 'ns'
+plot_xvg('temperature.xvg',  'Temperature Over Time',      'Temperature (K)',   'temperature.png',   xunit='ps')
+plot_xvg('pressure.xvg',     'Pressure Over Time',         'Pressure (bar)',     'pressure.png',      xunit='ps')
+plot_xvg('total_energy.xvg', 'Total Energy Over Time',     'Energy (kJ/mol)',    'total_energy.png',  xunit='ps')
+plot_xvg('rmsd.xvg',         'RMSD Over Time',             'RMSD (nm)',          'rmsd.png',          xunit='ns')
+plot_xvg('rg.xvg',           'Radius of Gyration Over Time','Rg (nm)',            'rg.png',            xunit='ps')
+
+#检查能量跳点并可视化
+# 设置工作目录（根据你的实际情况）
+work_dir = '/content/drive/MyDrive/project/md'
+os.chdir(work_dir)
+
+import subprocess, sys, os
+import numpy as np, pandas as pd
+
+EDR = "md.edr"   # 如果不是这个名字改过来
+TMPXVG = "total.xvg"
+LOG = "md.log"
+# 这里的 index_num 是 gmx energy 输出里的编号，代表 Total Energy
+# 先交互确认一下你的 Total Energy 在 gmx energy 中是第几项，然后设置这个值
+index_num = 13   # <<-- **根据实际交互结果修改**，常见不是10时请替换
+
+# 1) 调用 gmx energy 非交互导出 total energy
+try:
+    p = subprocess.run(["gmx", "energy", "-f", EDR, "-o", TMPXVG],
+                       input=f"{index_num}\n".encode(),
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+except subprocess.CalledProcessError as e:
+    print("gmx energy 调用失败：", e.stderr.decode()[:1000])
+    raise
+
+print("gmx energy 导出完成 ->", TMPXVG)
+
+# 2) 读取 xvg 并检测跳点
+def read_xvg(path):
+    with open(path) as f:
+        lines=[l for l in f if not l.startswith(('#','@'))]
+    from io import StringIO
+    df=pd.read_csv(StringIO(''.join(lines)), sep=r'\s+', header=None)
+    return df
+
+df = read_xvg(TMPXVG)
+t = df.iloc[:,0].values
+E = df.iloc[:,1].values
+d = np.diff(E)
+thr = max(1000, np.std(d)*8)   # 阈值：至少 1000 kJ/mol 或 8*sigma
+jumps = np.where(np.abs(d) > thr)[0]
+
+print("threshold:", thr)
+if len(jumps) == 0:
+    print("No large jumps detected in total energy.")
+else:
+    print("Detected jumps (index of frame before jump):", jumps.tolist())
+    for j in jumps:
+        print(f" jump: {t[j]} ps -> {t[j+1]} ps   delta = {E[j+1]-E[j]:.1f} kJ/mol")
+
+# 3) 打印 md.log 中与 checkpoint/restart/Starting mdrun 相关的上下文（若有）
+if os.path.exists(LOG):
+    with open(LOG) as f:
+        lines = f.readlines()
+    keywords = ["Restarting from checkpoint", "Reading checkpoint", "Starting mdrun", "Will start from checkpoint"]
+    print("\n---- md.log keyword occurrences (with +/-5 lines context) ----")
+    for i, line in enumerate(lines):
+        for kw in keywords:
+            if kw in line:
+                start = max(0, i-5)
+                end = min(len(lines), i+6)
+                print(f"\n--- Context around line {i+1}: (keyword: {kw}) ---")
+                print(''.join(lines[start:end]))
+else:
+    print("md.log not found in current directory.")
+import numpy as np
+import matplotlib.pyplot as plt
+
+#  读取数据 
+file = 'total.xvg'  # 你的能量文件名
+data = np.loadtxt(file, comments=['#', '@'])
+time = data[:,0]
+energy = data[:,1]
+
+# 计算能量变化
+diff = np.diff(energy)
+abs_diff = np.abs(diff)
+
+# 设定检测阈值
+threshold = np.mean(abs_diff) + 5 * np.std(abs_diff)
+jumps = np.where(abs_diff > threshold)[0]
+
+print(f"检测到跳点数量: {len(jumps)}")
+for j in jumps:
+    print(f"jump {time[j]:.2f} → {time[j+1]:.2f} ps, ΔE = {energy[j+1]-energy[j]:.1f} kJ/mol")
+
+# 绘图
+plt.figure(figsize=(10,5))
+plt.plot(time, energy, lw=0.8, label='Total Energy')
+if len(jumps) > 0:
+    plt.scatter(time[jumps], energy[jumps], color='red', label='Detected Jump')
+plt.xlabel('Time (ps)')
+plt.ylabel('Total Energy (kJ/mol)')
+plt.title('Total Energy vs Time')
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# sasa分析
+# 运行前确认：ref_renamed.pdb 和 aligned.xtc 在当前目录或指定路径
+# 如果文件在 Drive，先 drive.mount(...) 并把路径改成 /content/drive/...
+work_dir = '/content/drive/MyDrive/project/md/'
+%cd $work_dir
+
+import os, sys, math
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+
+import MDAnalysis as mda
+from MDAnalysis.lib import distances
+from MDAnalysis.analysis import contacts
+from MDAnalysis.analysis import rms
+
+# 1) 参数设定（按需修改）
+pdb_ref = "ref_renamed.pdb"      # 你的参考 PDB（已替换 segid）
+traj_tpr = "md.tpr"              # 可选，如果不需要再载入拓扑可置 None
+traj_xtc = "aligned.xtc"         # 已对齐的轨迹（非常重要）
+
+# 如果你是用 md.tpr + aligned.xtc，则 universe = Universe(md.tpr, aligned.xtc)
+# 如果只有 pdb + aligned.xtc，也可以使用 Universe(pdb, aligned.xtc)
+chainA = "seg_1_PROB"            # 轨迹中代表酶/蛋白1的 segid（按你确认）
+chainB = "seg_2_PROC"            # 轨迹中代表蛋白2的 segid
+contact_cutoff = 0.4             # nm (0.4 nm = 4 Å)
+water_cutoff = 0.35              # nm，水接触界面阈值
+step = 1                         # 轨迹步长（采样），可改为 5/10 以加速
+out_dir = "ppi_results"
+os.makedirs(out_dir, exist_ok=True)
+
+# 2) 载入 Universe
+# prefer tpr+xtc if available (keeps topology)
+if os.path.exists(traj_tpr) and os.path.exists(traj_xtc):
+    u = mda.Universe(traj_tpr, traj_xtc)
+else:
+    u = mda.Universe(pdb_ref, traj_xtc)
+
+ref = mda.Universe(pdb_ref)  # static reference for SASA or checks
+
+# 3) selections
+A_atoms = u.select_atoms(f"segid {chainA} and protein")
+B_atoms = u.select_atoms(f"segid {chainB} and protein")
+print(f"A atoms: {len(A_atoms)}, residues: {len(A_atoms.residues)}")
+print(f"B atoms: {len(B_atoms)}, residues: {len(B_atoms.residues)}")
+
+# residue lists (ordered)
+A_residues = list(A_atoms.residues)
+B_residues = list(B_atoms.residues)
+nA = len(A_residues); nB = len(B_residues)
+
+# create index maps for residues
+A_idx_map = {r.resid: i for i,r in enumerate(A_residues)}
+B_idx_map = {r.resid: j for j,r in enumerate(B_residues)}
+
+# 4) Compute residue-residue contact occupancy
+#    We'll compute for sampled frames: for each residue pair (i,j) whether any atom-atom distance < cutoff
+#    This is O(n_pairs * n_frames * atoms_per_residue^2) but acceptable for ~70x70 residues.
+
+frames = list(range(0, len(u.trajectory), step))
+nframes = len(frames)
+print("Frames sampled:", nframes)
+
+# initialize counters
+pair_counts = np.zeros((nA, nB), dtype=int)   # count frames where residue pair is in contact
+A_contact_counts = np.zeros(nA, dtype=int)    # per-residue frames count contacting other chain
+B_contact_counts = np.zeros(nB, dtype=int)
+water_counts_per_frame = np.zeros(nframes, dtype=int)
+
+# pre-build per-residue atom index lists for speed (global atom indices)
+A_res_atom_inds = [res.atoms.indices for res in A_residues]
+B_res_atom_inds = [res.atoms.indices for res in B_residues]
+
+# water selection (adjust resname if your water name differs)
+# common names: TIP3, SOL, W, HOH
+water_sel = u.select_atoms("resname TIP3 or resname SOL or resname W or resname HOH")
+print("Water atoms:", len(water_sel), "water residues:", len(water_sel.residues))
+
+# interface residue mask (will be filled after computing pairwise contacts)
+interface_mask_A = np.zeros(nA, dtype=bool)
+interface_mask_B = np.zeros(nB, dtype=bool)
+
+pbar = tqdm(total=nframes, desc="Frames")
+for idx_frame, frame in enumerate(frames):
+    u.trajectory[frame]  # jump to frame
+    # coordinates arrays
+    coords = u.atoms.positions  # in Å; distances functions accept Å (MDAnalysis default)
+    # But our cutoffs are in nm; convert to Å
+    cutoff_ang = contact_cutoff * 10.0
+    # For speed: compute full distance array between atoms in A and B? That could be large.
+    # We'll loop residue pairs (nA * nB manageable for ~70x70)
+    for i in range(nA):
+        ai_inds = A_res_atom_inds[i]
+        ai_pos = coords[ai_inds]
+        for j in range(nB):
+            bj_inds = B_res_atom_inds[j]
+            bj_pos = coords[bj_inds]
+            # compute minimal distance between ai_pos and bj_pos
+            # use numpy broadcasting if small
+            d = distances.distance_array(ai_pos, bj_pos, box=u.dimensions)
+            if d.size == 0:
+                continue
+            if d.min() <= cutoff_ang:
+                pair_counts[i,j] += 1
+                A_contact_counts[i] += 1
+                B_contact_counts[j] += 1
+                interface_mask_A[i] = True
+                interface_mask_B[j] = True
+    # water count near interface atoms: first get interface atoms (current frame)
+    if interface_mask_A.any() or interface_mask_B.any():
+        # build interface atom indices for this frame (all atoms of residues currently contacting)
+        interface_atoms_inds = np.concatenate([A_res_atom_inds[i] for i in np.where(interface_mask_A)[0]] +
+                                             [B_res_atom_inds[j] for j in np.where(interface_mask_B)[0]])
+        if interface_atoms_inds.size>0:
+            # unique water residues within water_cutoff (nm => Å)
+            wc_ang = water_cutoff * 10.0
+            # get water residue centers or atom positions
+            # Using distance_array between water oxygen atoms and interface atoms is efficient
+            water_ox = water_sel.select_atoms("name O or name OW or name OH2")
+            if len(water_ox)>0 and len(interface_atoms_inds)>0:
+                d_wo = distances.distance_array(u.atoms.positions[water_ox.indices],
+                                               u.atoms.positions[interface_atoms_inds], box=u.dimensions)
+                close_water_inds = np.where(d_wo.min(axis=1) <= wc_ang)[0]
+                # unique water residues
+                water_resids = {water_ox.residues[i].resid for i in close_water_inds}
+                water_counts_per_frame[idx_frame] = len(water_resids)
+            else:
+                water_counts_per_frame[idx_frame] = 0
+    pbar.update(1)
+pbar.close()
+
+# 5) Normalize counts -> occupancy (fraction of sampled frames)
+pair_occupancy = pair_counts / float(nframes)    # shape nA x nB
+A_occ = (pair_counts.sum(axis=1) > 0).astype(int)  # boolean whether residue ever contacts
+# but more useful: per-residue contact fraction (fraction of frames residue i contacts ANY j)
+A_contact_fraction = np.zeros(nA)
+B_contact_fraction = np.zeros(nB)
+# for each residue, count frames where it had at least one contact
+# we computed A_contact_counts as incremented per pair; but that overcounts frames when residue contacts multiple partners.
+# So we recompute properly:
+# Recompute by iterating frames again but only tracking per-residue presence might be expensive;
+# Instead approximate: assume earlier method added once per pair per frame; we will compute proper per-residue presence by:
+# quick recompute: for each frame we can check min distance to other chain per residue — do that now but using step frames (we already sampled)
+A_frame_presence = np.zeros((nframes, nA), dtype=bool)
+B_frame_presence = np.zeros((nframes, nB), dtype=bool)
+
+pbar = tqdm(total=nframes, desc="Recomputing per-residue presence")
+for idx_frame, frame in enumerate(frames):
+    u.trajectory[frame]
+    coords = u.atoms.positions
+    cutoff_ang = contact_cutoff * 10.0
+    for i in range(nA):
+        ai_pos = coords[A_res_atom_inds[i]]
+        # compute min dist to entire B atoms (faster than pairwise)
+        d = distances.distance_array(ai_pos, coords[np.concatenate(B_res_atom_inds)], box=u.dimensions)
+        if d.size>0 and d.min() <= cutoff_ang:
+            A_frame_presence[idx_frame, i] = True
+    for j in range(nB):
+        bj_pos = coords[B_res_atom_inds[j]]
+        d = distances.distance_array(bj_pos, coords[np.concatenate(A_res_atom_inds)], box=u.dimensions)
+        if d.size>0 and d.min() <= cutoff_ang:
+            B_frame_presence[idx_frame, j] = True
+    pbar.update(1)
+pbar.close()
+
+A_contact_fraction = A_frame_presence.sum(axis=0) / float(nframes)
+B_contact_fraction = B_frame_presence.sum(axis=0) / float(nframes)
+
+# 6) Save residue-level results
+# Build residue labels
+A_labels = [f"{res.resname}{res.resid}" for res in A_residues]
+B_labels = [f"{res.resname}{res.resid}" for res in B_residues]
+
+df_A = pd.DataFrame({"res_label": A_labels, "contact_fraction": A_contact_fraction})
+df_B = pd.DataFrame({"res_label": B_labels, "contact_fraction": B_contact_fraction})
+
+df_A.to_csv(os.path.join(out_dir, "residue_contact_fraction_A.csv"), index=False)
+df_B.to_csv(os.path.join(out_dir, "residue_contact_fraction_B.csv"), index=False)
+
+# pair matrix -> DataFrame
+df_pair = pd.DataFrame(pair_occupancy, index=A_labels, columns=B_labels)
+df_pair.to_csv(os.path.join(out_dir, "residue_residue_contact_occupancy.csv"))
+
+# water counts per frame
+df_water = pd.DataFrame({"frame_index": frames, "water_count": water_counts_per_frame})
+df_water.to_csv(os.path.join(out_dir, "interface_water_counts.csv"), index=False)
+
+print("Saved CSVs to", out_dir)
+
+pip install freesasa
+
+import MDAnalysis as mda
+import numpy as np
+import pandas as pd
+import os
+
+# 配置
+pdb_ref = "ref_renamed.pdb"   # 修改为你的复合物PDB路径
+output_csv = "sasa_per_residue.csv"
+
+try:
+    from MDAnalysis.analysis.sasa import ShrakeRupley
+    print("✅ 使用 MDAnalysis ShrakeRupley 进行 SASA 计算")
+
+    u = mda.Universe(pdb_ref)
+    sr = ShrakeRupley(probe_radius=1.4, n_sphere_points=960)
+    sr.run(u)
+    sasa_res = [res.sasa for res in u.residues]
+
+    df = pd.DataFrame({
+        "chain": [res.segid for res in u.residues],
+        "resname": [res.resname for res in u.residues],
+        "resid": [res.resid for res in u.residues],
+        "sasa": sasa_res
+    })
+    df.to_csv(output_csv, index=False)
+    print(f"✅ SASA计算完成（MDAnalysis），结果已保存：{output_csv}")
+
+except Exception as e:
+    print(f"⚠️ MDAnalysis SASA不可用，自动切换到FreeSASA。原因: {e}")
+    try:
+        import freesasa
+
+        print("✅ 使用 FreeSASA 进行 SASA 计算")
+        structure = freesasa.Structure(pdb_ref)
+        result = freesasa.calc(structure)
+
+        # ----------- 检测接口版本 -----------
+        if hasattr(freesasa, "residueAreas"):
+            # 旧接口（部分系统仍保留）
+            res_areas = freesasa.residueAreas(structure, result)
+            data = []
+            for chain_id in res_areas:
+                for res_name in res_areas[chain_id]:
+                    for res_num in res_areas[chain_id][res_name]:
+                        sasa_val = res_areas[chain_id][res_name][res_num].total
+                        data.append({
+                            "chain": chain_id,
+                            "resname": res_name,
+                            "resid": res_num,
+                            "sasa": sasa_val
+                        })
+            df = pd.DataFrame(data)
+
+        else:
+            # 新接口：通过classifier解析
+            data = []
+            for i in range(structure.nAtoms()):
+                atom_area = result.atomArea(i)
+                resnum = structure.residueNumber(i)
+                resname = structure.residueName(i)
+                chain = structure.chainLabel(i)
+                data.append((chain, resname, resnum, atom_area))
+            df_tmp = pd.DataFrame(data, columns=["chain", "resname", "resid", "atom_sasa"])
+            df = df_tmp.groupby(["chain", "resname", "resid"], as_index=False)["atom_sasa"].sum()
+            df.rename(columns={"atom_sasa": "sasa"}, inplace=True)
+
+        df.to_csv(output_csv, index=False)
+        print(f"✅ SASA计算完成（FreeSASA），结果已保存：{output_csv}")
+
+    except Exception as e2:
+        print(f"❌ FreeSASA计算失败：{e2}")
+        print("请确认：")
+        print(" - FreeSASA 是否正确安装（pip install freesasa）")
+        print(" - 输入的 PDB 文件是否完整（含原子坐标和链信息）")
+# 可视化
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from google.colab import files
+
+# 读取输出文件
+sasa = pd.read_csv("sasa_per_residue.csv")
+contA = pd.read_csv("residue_contact_fraction_A.csv")
+contB = pd.read_csv("residue_contact_fraction_B.csv")
+water = pd.read_csv("interface_water_counts.csv")
+
+print("✅ 文件读取成功")
+
+# 预处理
+# 统一残基标识
+sasa["residue"] = sasa["chain"].astype(str) + "-" + sasa["resname"].astype(str) + sasa["resid"].astype(str)
+contA["residue"] = contA["res_label"].astype(str)
+contB["residue"] = contB["res_label"].astype(str)
+
+# 选取有用列
+sasa = sasa[["residue", "sasa"]]
+contA = contA[["residue", "contact_fraction"]].rename(columns={"contact_fraction": "contact_A"})
+contB = contB[["residue", "contact_fraction"]].rename(columns={"contact_fraction": "contact_B"})
+
+# 合并表格
+df = sasa.merge(contA, on="residue", how="outer")
+df = df.merge(contB, on="residue", how="outer")
+df.fillna(0, inplace=True)
+
+# 计算平均接触占有率
+df["contact_total"] = df[["contact_A", "contact_B"]].mean(axis=1)
+
+# 计算平均水分子数（整体）
+mean_water = water["water_count"].mean()
+print(f"💧 平均界面水分子数: {mean_water:.1f}")
+
+#  绘制 SASA vs Contact
+plt.figure(figsize=(10, 6), dpi=300)
+sns.set(style="whitegrid", font_scale=1.2)
+plt.hexbin(df["sasa"], df["contact_total"], gridsize=30, cmap="viridis", bins='log')
+
+# 标注关键残基（前5%）
+threshold_x = np.percentile(df["sasa"], 95)
+threshold_y = np.percentile(df["contact_total"], 95)
+key_res = df[(df["sasa"] > threshold_x) | (df["contact_total"] > threshold_y)]
+
+for _, row in key_res.iterrows():
+    plt.text(row["sasa"], row["contact_total"], row["residue"],
+             fontsize=7, fontweight="bold", color="crimson")
+
+plt.xlabel("Solvent Accessible Surface Area (Å²)", fontsize=12)
+plt.ylabel("Residue Contact Fraction (A+B avg)", fontsize=12)
+plt.title("Residue SASA vs Contact Density Map", fontsize=14, weight="bold")
+plt.colorbar(label="Residue Density (log scale)")
+plt.tight_layout()
+plt.savefig("SASA_vs_ContactDensity.tif", format="tif", dpi=900)
+plt.show()
+files.download("SASA_vs_ContactDensity.tif")
+
+# 绘制 SASA 分布 + 平均水含量背景
+plt.figure(figsize=(10, 6), dpi=300)
+sns.kdeplot(df["sasa"], fill=True, color="skyblue", alpha=0.6)
+plt.axvline(df["sasa"].mean(), color="red", linestyle="--", label=f"Mean SASA = {df['sasa'].mean():.1f}")
+plt.axhline(mean_water, color="green", linestyle=":", label=f"Mean Interface Water = {mean_water:.1f}")
+plt.xlabel("Residue SASA (Å²)")
+plt.ylabel("Density")
+plt.title("Residue SASA Distribution with Water-Level Context", weight="bold")
+plt.legend()
+plt.tight_layout()
+plt.savefig("SASA_Distribution_WaterContext.tif", format="tif", dpi=900)
+plt.show()
+files.download("SASA_Distribution_WaterContext.tif")
+
+# 导出关键残基表
+key_res.to_csv("Top_residues.csv", index=False)
+files.download("Top_residues.csv")
+
+print("✅ 绘图完成！已导出高分辨率 .tif 图与关键残基表。")
+
+# 6.活性位点可视化
+import pandas as pd
+from google.colab import files
+
+# ========= 输入文件 =========
+contactA_file = "/content/drive/MyDrive/project/md/ppi_results/residue_contact_fraction_A.csv"
+contactB_file = "/content/drive/MyDrive/project/md/ppi_results/residue_contact_fraction_B.csv"
+output_cxc = "highlight_residues_chimerax.cxc"
+chain_id = "A"  # 改成你的链
+
+# 读取CSV并处理
+contA = pd.read_csv(contactA_file)
+contB = pd.read_csv(contactB_file)
+
+for df in [contA, contB]:
+    if "res_label" in df.columns:
+        df["residue"] = df["res_label"]
+    elif {"resname", "resid"}.issubset(df.columns):
+        df["residue"] = df["resname"].astype(str) + df["resid"].astype(str)
+    else:
+        raise ValueError("❌ 未找到res_label或(resname,resid)列")
+
+merged = pd.merge(contA[["residue", "contact_fraction"]],
+                  contB[["residue", "contact_fraction"]],
+                  on="residue", how="outer", suffixes=("_A", "_B"))
+merged.fillna(0, inplace=True)
+merged["contact_avg"] = merged[["contact_fraction_A", "contact_fraction_B"]].mean(axis=1)
+
+# 取前15个高接触残基
+top = merged.sort_values("contact_avg", ascending=False).head(15)
+
+# 生成颜色表（可按需要修改）
+colors = ["red", "blue", "green", "orange", "purple", "cyan", "magenta", "yellow", "salmon", "lime",
+          "pink", "gold", "violet", "turquoise", "brown"]
+
+# 生成 ChimeraX 脚本
+lines = [
+    "# ChimeraX Highlight Residues Script",
+    "# 打开模型后直接运行本脚本",
+    "",
+    "color white",
+    "show",
+    "lighting soft",
+]
+
+for i, (_, row) in enumerate(top.iterrows()):
+    label = row["residue"]
+    resname = ''.join([c for c in label if c.isalpha()])[:3].upper()
+    resid = ''.join([c for c in label if c.isdigit()])
+    contact = row['contact_avg']
+    color = colors[i % len(colors)]
+    lines.append(f"# {resname}{resid} 平均接触占有率 {contact:.3f}")
+    # 设置棒状结构
+    lines.append(f"style stick :{resid}.{chain_id}")
+    # 设置颜色
+    lines.append(f"color {color} :{resid}.{chain_id}")
+    # 添加标注
+    lines.append(f'label create :{resid}.{chain_id} text "{resname}{resid}" size 1.2 color {color}')
+    lines.append("")
+
+lines.append("view")
+
+# 保存文件
+with open(output_cxc, "w", encoding="utf-8", newline="\n") as f:
+    f.write("\n".join(lines))
+
+print("✅ 已生成 ChimeraX 脚本，可直接打开:", output_cxc)
+files.download(output_cxc)
