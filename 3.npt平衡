@@ -1,0 +1,255 @@
+# 1.配置环境
+# 安装依赖（CUDA + CMake + 编译工具）
+!apt-get update -y
+!apt-get install -y cmake build-essential m4 git wget
+!apt-get install -y libfftw3-dev libgsl-dev
+
+# 安装 GPU 支持版 GROMACS
+%cd /content
+!wget ftp://ftp.gromacs.org/pub/gromacs/gromacs-2022.5.tar.gz
+!tar xfz gromacs-2022.5.tar.gz
+%cd gromacs-2022.5
+!mkdir build
+%cd build
+!cmake .. -DGMX_GPU=CUDA -DGMX_BUILD_OWN_FFTW=ON -DCMAKE_INSTALL_PREFIX=/usr/local/gromacs
+!make -j8
+!make install
+
+# 加载 GROMACS 环境
+!source /usr/local/gromacs/bin/GMXRC
+import os
+os.environ['PATH'] = '/usr/local/gromacs/bin:' + os.environ['PATH']
+
+#  挂载 Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+import os
+
+# 确认 Google Drive 挂载路径是否正确
+drive_path = "/content/drive/MyDrive/project/npt"
+if not os.path.exists(drive_path):
+    print(f"目录 {drive_path} 不存在，创建它...")
+    os.makedirs(drive_path)
+else:
+    print(f"目录 {drive_path} 存在。")
+
+# 检查是否能写入文件
+test_file_path = os.path.join(drive_path, "test.txt")
+try:
+    with open(test_file_path, "w") as test_file:
+        test_file.write("Test")
+    print("可以成功写入文件！")
+except Exception as e:
+    print(f"写入文件失败: {e}")
+
+# 2. 文件准备
+# 进入文件夹（在该文件夹导入nvt输出文件，topol文件，以及charmmgui输出的toppear文件夹）
+%cd /content/drive/MyDrive/MD_project_10075026/step3_npt
+import os
+
+# 检查 topol.top 文件是否存在
+topol_path = '/content/drive/MyDrive/MD_project/step3_npt/topol.top'
+if os.path.exists(topol_path):
+    print(f"找到 topol.top 文件: {topol_path}")
+else:
+    print(f"没有找到 topol.top 文件，请检查路径或文件名。")
+
+# 创建 npt.mdp 文件（此处运行时间为1ns）
+mdp_content = """
+integrator              = md
+nsteps                  = 1000000
+dt                      = 0.002
+
+nstxout-compressed      = 1000
+continuation            = yes
+
+constraint_algorithm    = lincs
+constraints             = all-bonds
+lincs_iter              = 1
+lincs_order             = 4
+
+cutoff-scheme           = Verlet
+ns_type                 = grid
+nstlist                 = 10
+rcoulomb                = 1.0
+rvdw                    = 1.0
+
+tcoupl                  = V-rescale
+tc-grps                 = System
+tau_t                   = 0.1
+ref_t                   = 310
+
+pcoupl                  = Parrinello-Rahman
+pcoupltype              = isotropic
+tau_p                   = 2.0
+ref_p                   = 1.0
+compressibility         = 4.5e-5
+
+pbc                     = xyz
+gen_vel                 = no
+"""
+
+# 确认目标目录存在
+output_path = "/content/drive/MyDrive/project/npt/npt.mdp"
+with open(output_path, "w") as file:
+    file.write(mdp_content)
+
+print(f"npt.mdp 文件已成功创建: {output_path}")
+
+# 创建 NPT tpr 文件
+!gmx grompp -f npt.mdp -c nvt.gro -r nvt.gro -t nvt.cpt -p topol.top -o npt.tpr
+
+# 检查 tpr 是否成功生成
+!ls -lh npt.tpr
+
+# 3. 运行npt模拟
+!gmx mdrun -deffnm npt -v
+
+# 模拟运行时间过长可中止后续跑
+# 接续模拟
+# 挂载 Google Drive
+from google.colab import drive
+drive.mount('/content/drive')
+
+# 回到 NPT 模拟保存目录
+%cd /content/drive/MyDrive/project/npt/
+
+# 检查是否存在 checkpoint 文件
+!ls nvt.cpt
+
+# 接续工作
+!gmx mdrun -deffnm npt -cpi npt.cpt -v
+
+# 4. 模拟可视化（根据输出图像，若体系已稳定可提前结束）
+# 通过输出结果判断体系稳定性（输入想查看的选项编号，每个编号需换行，结束输入0，Tot-Drift偏大则需延长时间）
+!gmx energy -f npt.edr
+
+# 图像可视化
+!gmx energy -f npt.edr -o temp.xvg
+!gmx energy -f npt.edr -o pressure.xvg
+!gmx energy -f npt.edr -o density.xvg
+
+# 设置工作目录（根据实际情况）
+work_dir = '/content/drive/MyDrive/project/npt/output'
+os.chdir(work_dir)
+
+# 输出图片
+import matplotlib.pyplot as plt
+import numpy as np
+
+# 定义一个函数读取 .xvg 文件
+def read_xvg(filename):
+    x, y = [], []
+    with open(filename, 'r') as f:
+        for line in f:
+            if line.startswith(('#', '@')):  # 忽略注释
+                continue
+            cols = line.split()
+            x.append(float(cols[0]))
+            y.append(float(cols[1]))
+    return np.array(x), np.array(y)
+
+# 读取温度、压力、密度数据
+t, temp = read_xvg("temp.xvg")
+t_p, pressure = read_xvg("pressure.xvg")
+t_d, density = read_xvg("density.xvg")
+
+# 绘制图像
+plt.figure(figsize=(20,5))
+
+plt.subplot(1,3,1)
+plt.plot(t, temp, color='tomato')
+plt.title('Temperature (K)')
+plt.xlabel('Time (ps)')
+plt.ylabel('Temperature')
+plt.savefig('npt_tem.tif', dpi=900)
+
+plt.subplot(1,3,2)
+plt.plot(t_p, pressure, color='royalblue')
+plt.title('Pressure (bar)')
+plt.xlabel('Time (ps)')
+plt.ylabel('Pressure')
+plt.savefig('npt_pre.tif', dpi=900)
+
+plt.subplot(1,3,3)
+plt.plot(t_d, density, color='seagreen')
+plt.title('Density (kg/m³)')
+plt.xlabel('Time (ps)')
+plt.ylabel('Density')
+plt.savefig('npt_den.tif', dpi=900)
+
+plt.tight_layout()
+plt.show()
+
+# ⚡ 若模拟结束后体系仍未平衡，可采用如下方式延长平衡时间
+# 生成新的npt.mdp文件（修改nsteps和nstxout）
+mdp_content = """
+integrator              = md
+nsteps                  = 1000000
+dt                      = 0.002
+
+nstxout-compressed      = 1000
+continuation            = yes
+
+constraint_algorithm    = lincs
+constraints             = all-bonds
+lincs_iter              = 1
+lincs_order             = 4
+
+cutoff-scheme           = Verlet
+ns_type                 = grid
+nstlist                 = 10
+rcoulomb                = 1.0
+rvdw                    = 1.0
+
+tcoupl                  = V-rescale
+tc-grps                 = System
+tau_t                   = 0.1
+ref_t                   = 310
+
+pcoupl                  = Parrinello-Rahman
+pcoupltype              = isotropic
+tau_p                   = 2.0
+ref_p                   = 1.0
+compressibility         = 4.5e-5
+
+pbc                     = xyz
+gen_vel                 = no
+"""
+
+# 确认目标目录存在
+output_path = "/content/drive/MyDrive/project/npt/npt2.mdp"
+with open(output_path, "w") as file:
+    file.write(mdp_content)
+
+print(f"npt2.mdp 文件已成功创建: {output_path}")
+
+# 生成新的 tpr，带状态恢复
+!gmx grompp -f npt2.mdp -c npt.gro -t npt.cpt -p topol.top -o npt_long.tpr
+
+# 断点续跑（指定 .tpr 和 checkpoint，-noappend代表仅支持单次续跑，每次续跑仅从第一个断点开始）
+!gmx mdrun -s npt_long.tpr -deffnm npt2 -cpi npt.cpt -noappend -v
+
+# 回到上方可视化验证部分确认体系的平衡情况
+
+# 数据备份
+#import shutil
+import datetime
+import os
+
+# 当前模拟输出文件夹
+src = "/content/drive/MyDrive/project/npt"
+
+# 备份目标路径（含时间戳）
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+backup_dir = "/content/drive/MyDrive/project/backups"
+backup_zip = f"{backup_dir}/step3_npt_backup_{timestamp}.zip"
+
+# 确保备份目录存在
+os.makedirs(backup_dir, exist_ok=True)
+
+# 执行压缩备份
+shutil.make_archive(backup_zip.replace(".zip", ""), 'zip', src)
+
+print(f"✅ 备份完成！\n📁 路径: {backup_zip}")
