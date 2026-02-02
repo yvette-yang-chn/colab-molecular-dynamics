@@ -14,5 +14,5 @@ pydock只需要提供配体和受体的.pdb文件，haddock需要填写活性位
 请善用断点接续功能，colab对非会员有8h/day的使用限制，日常使用请及时保存。
 在最终的生产模拟过程中，由于模拟时间较长，如网络不稳定可能导致续跑失败，如果你和我一样将文件挂载在google drive中运行，可以将模拟所用的文件回退到相同的历史版本，然后继续模拟，因此，请定时保存并再次续跑。
 
-*如果存在其它问题，欢迎交流😎
-后续对代码的更新我会在zenodo中同步：https://doi.org/10.5281/zenodo.18452674
+*如果存在其它问题，欢迎交流😎 https://github.com/yvette-yang-chn/colab-molecular-dynamics/tree/v1.0.1 
+后续如果有代码的更新或调整，我会在zenodo中同步并在指南中标注：https://doi.org/10.5281/zenodo.18452674
